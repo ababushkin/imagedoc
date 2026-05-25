@@ -1,0 +1,61 @@
+Work on Linear issue ABA-251:
+
+<issue identifier="ABA-251">
+<title>check.py false-positives reject a compliant photo — B3 background sampling, B1 sharpness, visa aspect</title>
+<description>
+**Problem.** A post-<issue id="51f1859a-7c30-4f2f-812e-c07b4f9add6d">ABA-250</issue> validation run found that `check.py` still **rejects a known-compliant photo**: an accredited Australia Post passport photo (Canon EOS 1500D, 300 DPI, 35:45) FAILs on three checks, all false positives. <issue id="51f1859a-7c30-4f2f-812e-c07b4f9add6d">ABA-250</issue> closed its own seed list and the 58-test suite is green, but the project goal — don't reject a compliant photo — is not met. Tests pass; the real photo still fails.
+
+Ground-truth fixture is PII (gitignored `input/anton-3.jpg`), so it can't be committed — needs a synthetic stand-in or a local-only test path.
+
+## Bugs to fix
+
+**1. B3 background sampling is contaminated by the subject.**
+B3 samples 10% strips on all four frame edges. In a *correctly framed* photo (head 70–80%, shoulders visible) those strips cut through hair, ears, and shirt — so the "background" stats measure the subject, not the wall. Measured on the AusPost photo:
+
+```
+full 4-edge border (current B3):  L* 87.4   variance 1453   ← FAILs uniformity (>400)
+top strip only (real background): L* 95.0   variance   70
+top corners only:                 L* 95.7   variance    4   ← flawless white
+```
+
+Lowering `background_l_min` to 75 (done in <issue id="51f1859a-7c30-4f2f-812e-c07b4f9add6d">ABA-250</issue>) fixed the brightness fail but not uniformity. The uniformity check effectively only passes on loosely-framed (non-compliant) photos.
+**Fix:** sample background only where it is background — use the detected face box to exclude the head's horizontal column; sample top-corners / above-crown.
+
+**2. B1 sharpness threshold is not resolution-aware.**
+`SHARPNESS_THRESHOLD = 100.0` (Laplacian variance). The AusPost photo is tack-sharp but scores 44 at 1056×1358 → false "blurry". Laplacian variance scales with resolution and edge content; a clean lower-res photo of smooth skin on a plain background scores low even when perfectly focused.
+**Fix:** normalise by resolution (or measure on a fixed-size face ROI) and recalibrate so a known-sharp photo passes.
+
+**3. Visa aspect rejects the standard photo.**
+The `visa` profile hardcodes `aspect_ratio = 3/4` (0.750) ±0.02, which FAILs a standard 35:45 (0.778) photo. Passport and citizenship are the *same physical photo*. <issue id="51f1859a-7c30-4f2f-812e-c07b4f9add6d">ABA-250</issue> widened the `passport` aspect to a range but left `visa` at 3:4.
+**Fix:** verify against the Home Affairs source whether the digital upload truly requires 3:4 or accepts the standard ratio; correct accordingly (a range, or rely on `--fix` to resize).
+
+## Acceptance
+
+* The ground-truth AusPost photo passes both profiles (or flags only legitimately, e.g. a digital-upload resize), with no false-positive B1/B3/aspect fails.
+* Regression tests added for each fix (synthetic fixtures): a sharp low-res photo passes B1; a uniform-background-but-tightly-framed photo passes B3; a 35:45 photo is handled correctly by `visa`.
+* `pytest` suite stays green; `README.md` reflects any rule change.
+
+Found during the <issue id="51f1859a-7c30-4f2f-812e-c07b4f9add6d">ABA-250</issue> validation run; see <issue id="51f1859a-7c30-4f2f-812e-c07b4f9add6d">ABA-250</issue> thread comment for the same evidence.
+</description>
+<team name="Personal"/>
+<label>model:sonnet</label>
+<project name="AU passport/visa photo — pre-submission compliance">Local, offline tool to verify and auto-fix a photo against AU passport/visa specs before printing or uploading — no face data sent to any online service.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="ABA-250" title="Validate check.py + add tests against verified AU photo requirements"/>
+<issue-ref identifier="ABA-246" title="Auto-fix F1 — crop+scale around face to profile framing"/>
+</related>
+</issue-relations>
+</issue>
+
+---
+
+ok update the linear ticket if the work is done, and also add information about how long this task took to complete and how many tokens were used (break up the token usage into categories if those are available)
+
+---
+
+try harder amd check again
+
+---
+
+how did you get these numbers? i want to make sure that all of my future project governance records this - should it be turned into a reusable skill/mcp?
