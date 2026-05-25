@@ -1,0 +1,43 @@
+Work on Linear issue ABA-250:
+
+<issue identifier="ABA-250">
+<title>Validate check.py + add tests against verified AU photo requirements</title>
+<description>
+**P2.** A second pass over `check.py` now that the requirements have been verified against the live official sources (May 2026). Two goals: (1) confirm every rule matches the official spec, and (2) stand up a test suite — **there are currently no tests at all** (no test files, no `pytest` pinned, no `def test`).
+
+Verified sources (now cited in `README.md` → *Document requirements*):
+
+* Passport — [https://www.passports.gov.au/passport-photo-guidelines](<https://www.passports.gov.au/passport-photo-guidelines>)
+* Visa / citizenship — [https://immi.homeaffairs.gov.au/citizenship/photo-requirements-for-citizenship-applications](<https://immi.homeaffairs.gov.au/citizenship/photo-requirements-for-citizenship-applications>)
+
+## Known issues found during verification (seed list — confirm + resolve each)
+
+1. **No automated tests.** Validation has no backstop. Add a suite with sample fixtures (a compliant photo, a document scan that must FAIL C1, an off-spec photo) and per-rule PASS/FAIL assertions. Pin `pytest` in `requirements.txt`.
+2. **Passport background too strict.** Code requires white (`background_l_min` 90); the official rule is "plain white **or light** background that contrasts with your face." May FAIL a valid light-grey-background passport photo. Also: the `passport` profile never checks face/background **contrast** (only `visa` does), though the office requires it.
+3. **Passport aspect tolerance misses 40:50.** Code uses 0.778 (35:45) ±0.02 → 0.758–0.798. Official photo size is a **range** (35–40 mm × 45–50 mm), so 0.80 (40:50) is valid but currently FAILs. Widen the band to 0.778–0.80.
+4. **No print-resolution warning.** The passport pixel floor (413×531 px @ 300 DPI) is a tool choice — the official spec states **no DPI/pixel rule** (it's mm on glossy paper). Decide whether to WARN below 600 DPI (827×1063 px) for print quality.
+5. **PNG accepted for visa.** Code accepts JPEG **and PNG**; Home Affairs asks for **JPEG**. A PNG the tool passes may be rejected by the portal. Decide: WARN on PNG for `visa`.
+6. **C2 head-height calibration.** C2 measures the Haar face box (brow→chin), which understates full chin-to-crown head height, so raw portraits read low against the 70–80% band. Needs a calibration factor (tracked alongside <issue id="889f0e5d-8c24-4062-907c-8324af430b99">ABA-246</issue>).
+7. **Passport file-size band (50 KB–2 MB) has no official basis** — it's a sanity band for a printed photo. Acceptable, but confirm + document as a tool choice.
+
+## Tasks
+
+* Re-check every value in `PROFILES` and every tier (A/B/C) against the verified spec.
+* For each known issue above: **fix**, downgrade to **WARN**, or **accept-and-document** with a one-line rationale.
+* Build the test suite; keep `README.md` and code in sync with any change.
+
+**Note:** a complete pass should run once the tool is feature-complete (<issue id="889f0e5d-8c24-4062-907c-8324af430b99">ABA-246</issue> auto-fix F1, <issue id="8bc02eb9-4d42-4179-9dd2-b84cfabd8b0d">ABA-247</issue> `--profile both`, <issue id="44ed691c-d069-4763-94be-0b8f2cff93cf">ABA-248</issue> auto-fix F2+F3) — but code-level validation of the existing tiers and the test scaffold can start now. Not assigned to the current cycle; slot at planning.
+
+**Acceptance:** test suite runs green covering tiers A/B/C and the auto-fix path; each known issue is resolved or explicitly accepted with a rationale recorded on this issue; `README.md` reflects the final rules.
+</description>
+<team name="Personal"/>
+<label>model:sonnet</label>
+<project name="AU passport/visa photo — pre-submission compliance">Local, offline tool to verify and auto-fix a photo against AU passport/visa specs before printing or uploading — no face data sent to any online service.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="ABA-246" title="Auto-fix F1 — crop+scale around face to profile framing"/>
+<issue-ref identifier="ABA-247" title="--profile both — report formatting, per-profile verdict, exit code"/>
+<issue-ref identifier="ABA-248" title="Auto-fix F2+F3 — visa size-targeting, -o output, re-check + exclusions"/>
+</related>
+</issue-relations>
+</issue>

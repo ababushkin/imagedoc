@@ -1,0 +1,65 @@
+{
+  "cli_version": "0.6.2",
+  "checkpoint_id": "a11a16142147",
+  "session_id": "f410037f-e8ad-4c2c-b414-1a9c91c395c5",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-25T04:41:10.678393Z",
+  "branch": "anton/aba-246-auto-fix-f1-cropscale-around-face-to-profile-framing",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "README.md",
+    "check.py",
+    "requirements.txt",
+    "tests/conftest.py",
+    "tests/test_check.py"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "d04cb81a9fd0",
+  "token_usage": {
+    "input_tokens": 38,
+    "cache_creation_tokens": 110243,
+    "cache_read_tokens": 2518131,
+    "output_tokens": 40703,
+    "api_call_count": 32
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-25T04:41:10.666288Z",
+    "agent_lines": 596,
+    "agent_removed": 28,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 596,
+    "total_lines_changed": 624,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 158,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/agents/entire-search.md": 25,
+        ".claude/settings.json": 84,
+        ".claude/settings.local.json": 49
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 49,
+      "user_lines_removed": 0,
+      "agent_lines_added": 705,
+      "agent_lines_removed": 28,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 49
+      }
+    }
+  ]
+}

@@ -3,7 +3,7 @@
   "checkpoint_id": "a11a16142147",
   "strategy": "manual-commit",
   "branch": "anton/aba-246-auto-fix-f1-cropscale-around-face-to-profile-framing",
-  "checkpoints_count": 0,
+  "checkpoints_count": 1,
   "files_touched": [
     "README.md",
     "check.py",
@@ -17,13 +17,19 @@
       "transcript": "/a1/1a16142147/0/full.jsonl",
       "content_hash": "/a1/1a16142147/0/content_hash.txt",
       "prompt": "/a1/1a16142147/0/prompt.txt"
+    },
+    {
+      "metadata": "/a1/1a16142147/1/metadata.json",
+      "transcript": "/a1/1a16142147/1/full.jsonl",
+      "content_hash": "/a1/1a16142147/1/content_hash.txt",
+      "prompt": "/a1/1a16142147/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 24945,
-    "cache_creation_tokens": 287251,
-    "cache_read_tokens": 5953138,
-    "output_tokens": 87994,
-    "api_call_count": 49
+    "input_tokens": 24983,
+    "cache_creation_tokens": 397494,
+    "cache_read_tokens": 8471269,
+    "output_tokens": 128697,
+    "api_call_count": 81
   }
 }
