@@ -44,16 +44,22 @@ PROFILES = {
         "background_l_min": 90,
         # Colour: must be colour (not greyscale)
         "must_be_colour": True,
+        # Auto-fix output: 35 × 45 mm at 600 dpi
+        "fix_width_px": 827,
+        "fix_height_px": 1063,
     },
     "visa": {
-        # Home Affairs digital upload: 350 × 350 px minimum, square crop
-        "width_px": 350,
-        "height_px": 350,
+        # Home Affairs digital upload: 354 × 472 px minimum (portrait, ~3:4)
+        # Preferred: 1200 × 1600 px; not meeting preferred is a WARN, not FAIL.
+        "width_px": 354,
+        "height_px": 472,
         "px_tolerance": 0,          # exact minimum; larger is accepted
-        "aspect_ratio": 1.0,
+        "aspect_ratio": 3 / 4,
         "aspect_tolerance": 0.02,
-        "file_size_min_kb": 10,
-        "file_size_max_kb": 1000,
+        "preferred_width_px": 1200,
+        "preferred_height_px": 1600,
+        "file_size_min_kb": 70,
+        "file_size_max_kb": 3584,   # 3.5 MB
         # Head height: 70–80 %
         "head_height_min_frac": 0.70,
         "head_height_max_frac": 0.80,
@@ -61,6 +67,9 @@ PROFILES = {
         "face_height_max_frac": 0.800,
         "background_l_min": 90,
         "must_be_colour": True,
+        # Auto-fix output: preferred upload size
+        "fix_width_px": 1200,
+        "fix_height_px": 1600,
     },
 }
 
@@ -107,6 +116,236 @@ def print_report(results: list[CheckResult], image_path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tier A — format, file size, dimensions, colour (Pillow-only)
+# ---------------------------------------------------------------------------
+
+def append_tier_a(result: CheckResult, image_path: Path, profile_name: str, profile: dict) -> None:
+    """Append Tier A (A1–A4) findings to result; returns early on unreadable file."""
+    from PIL import Image
+
+    try:
+        with Image.open(image_path) as img:
+            pil_format = img.format or ""
+            width, height = img.size
+            mode = img.mode
+    except Exception as exc:
+        result.fail(f"A1 cannot open image: {exc}")
+        return
+
+    # A1 — format
+    suffix = image_path.suffix.lstrip(".").lower()
+    ext_ok = suffix in {"jpg", "jpeg", "png"}
+    fmt_ok = pil_format.lower() in {"jpeg", "png", "mpo"}
+    if ext_ok and fmt_ok:
+        if pil_format.upper() == "MPO":
+            # MPO is a JPEG-based multi-picture container; most portals accept it
+            # as JPEG, but some reject it — convert to plain JPEG if upload fails.
+            result.warn(
+                f"A1 format MPO (.{suffix}) — JPEG-based container; "
+                "accepted but convert to plain JPEG if the portal rejects it"
+            )
+        else:
+            result.ok(f"A1 format {pil_format} (.{suffix}) — accepted (JPEG/PNG)")
+    else:
+        result.fail(
+            f"A1 format {pil_format or 'unknown'} (.{suffix}) not accepted — "
+            "file must be JPEG or PNG"
+        )
+
+    # A2 — file size
+    size_kb = image_path.stat().st_size / 1024
+    min_kb = profile["file_size_min_kb"]
+    max_kb = profile["file_size_max_kb"]
+    if size_kb < min_kb:
+        result.fail(f"A2 file size {size_kb:.0f} KB — below minimum {min_kb} KB")
+    elif size_kb > max_kb:
+        result.fail(
+            f"A2 file size {size_kb:.0f} KB — above maximum {max_kb} KB "
+            f"({max_kb / 1024:.1f} MB)"
+        )
+    else:
+        result.ok(f"A2 file size {size_kb:.0f} KB — within {min_kb}–{max_kb} KB")
+
+    # A3 — pixel dimensions and aspect ratio
+    min_w = profile["width_px"]
+    min_h = profile["height_px"]
+    target_aspect = profile["aspect_ratio"]
+    tol = profile["aspect_tolerance"]
+    aspect = width / height
+
+    if width < min_w or height < min_h:
+        result.fail(f"A3 image {width}×{height} px — below minimum {min_w}×{min_h} px")
+    else:
+        result.ok(f"A3 image {width}×{height} px — meets minimum {min_w}×{min_h} px")
+
+    if abs(aspect - target_aspect) <= tol:
+        result.ok(f"A3 aspect ratio {aspect:.3f} — within ±{tol} of target {target_aspect:.3f}")
+    else:
+        wider = "wider" if aspect > target_aspect else "taller"
+        result.fail(
+            f"A3 aspect ratio {aspect:.3f} — outside target {target_aspect:.3f} ±{tol} "
+            f"(image is {wider} than required)"
+        )
+
+    # Warn (not fail) if preferred size is defined and not met
+    pref_w = profile.get("preferred_width_px")
+    pref_h = profile.get("preferred_height_px")
+    if pref_w and pref_h and (width != pref_w or height != pref_h):
+        result.warn(
+            f"A3 image {width}×{height} px — preferred size is {pref_w}×{pref_h} px "
+            "(not required but recommended for best upload quality)"
+        )
+
+    # A4 — colour vs greyscale
+    if mode in ("L", "LA"):
+        result.fail(f"A4 image is greyscale (mode {mode}) — must be colour")
+    else:
+        result.ok(f"A4 image is colour (mode {mode})")
+
+
+# ---------------------------------------------------------------------------
+# Tier B — sharpness, brightness, background (OpenCV + numpy)
+# ---------------------------------------------------------------------------
+
+# Laplacian variance below this value → image is blurry.
+SHARPNESS_THRESHOLD = 100.0
+
+# Face-region mean L* (OpenCV 0-255 scale; CIE L* = OpenCV_L / 2.55).
+# Below MIN → underexposed; above MAX → overexposed / washed out.
+BRIGHTNESS_MIN_L = 64    # ≈ CIE L* 25
+BRIGHTNESS_MAX_L = 230   # ≈ CIE L* 90
+
+# Background border-strip thresholds.
+BG_BORDER_FRAC = 0.10        # fraction of frame sampled on each edge
+BG_SATURATION_MAX = 20.0     # max mean a*b* magnitude (neutral white/grey ≈ 0)
+BG_L_VARIANCE_MAX = 400.0    # max L* variance for a uniform background (std ≈ 20)
+
+# Minimum luminance contrast between background and face (visa requirement).
+BG_CONTRAST_MIN_L = 30.0     # ≈ CIE ΔL* 12
+
+
+def append_tier_b(
+    result: CheckResult,
+    image_path: Path,
+    profile_name: str,
+    profile: dict,
+    face_facts: dict | None,
+) -> None:
+    """Append Tier B (B1–B3) findings: sharpness, brightness, background."""
+    import cv2
+    import numpy as np
+
+    img = cv2.imread(str(image_path))
+    if img is None:
+        result.fail("B1 cannot read image for Tier B checks")
+        return
+
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # OpenCV Lab: L in [0,255], a and b in [0,255] with 128 = neutral.
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2Lab)
+
+    # Build face ROI once for B1 and B2 (skip if detection found ≠ 1 face).
+    face_roi_gray: np.ndarray | None = None
+    face_roi_l: np.ndarray | None = None
+    face_l_mean: float | None = None
+    if face_facts and "face_box_frac" in face_facts:
+        xf, yf, wf, hf = face_facts["face_box_frac"]
+        x1, y1 = int(xf * w), int(yf * h)
+        x2, y2 = int((xf + wf) * w), int((yf + hf) * h)
+        if x2 > x1 and y2 > y1:
+            face_roi_gray = gray[y1:y2, x1:x2]
+            face_roi_l = lab[y1:y2, x1:x2, 0]
+            face_l_mean = float(face_roi_l.mean())
+
+    # --- B1: Sharpness ---
+    lap_roi = face_roi_gray if face_roi_gray is not None else gray
+    lap_var = float(cv2.Laplacian(lap_roi, cv2.CV_64F).var())
+    if lap_var >= SHARPNESS_THRESHOLD:
+        result.ok(f"B1 sharpness OK (Laplacian variance {lap_var:.0f})")
+    else:
+        result.fail(
+            f"B1 image too blurry (Laplacian variance {lap_var:.0f} "
+            f"< threshold {SHARPNESS_THRESHOLD:.0f})"
+        )
+
+    # --- B2: Brightness/exposure ---
+    l_roi = face_roi_l if face_roi_l is not None else lab[:, :, 0]
+    mean_l = float(l_roi.mean())
+    if mean_l < BRIGHTNESS_MIN_L:
+        result.fail(
+            f"B2 underexposed (mean L {mean_l:.0f}/255 "
+            f"< minimum {BRIGHTNESS_MIN_L})"
+        )
+    elif mean_l > BRIGHTNESS_MAX_L:
+        result.fail(
+            f"B2 overexposed (mean L {mean_l:.0f}/255 "
+            f"> maximum {BRIGHTNESS_MAX_L})"
+        )
+    else:
+        result.ok(f"B2 brightness OK (mean L {mean_l:.0f}/255)")
+
+    # --- B3: Background uniformity ---
+    # Sample the four border strips and concatenate their pixels.
+    bh = max(1, int(h * BG_BORDER_FRAC))
+    bw = max(1, int(w * BG_BORDER_FRAC))
+    border_pixels = np.concatenate([
+        lab[:bh, :, :].reshape(-1, 3),
+        lab[h - bh:, :, :].reshape(-1, 3),
+        lab[:, :bw, :].reshape(-1, 3),
+        lab[:, w - bw:, :].reshape(-1, 3),
+    ], axis=0).astype(float)
+
+    l_vals = border_pixels[:, 0]
+    ab_shifted = border_pixels[:, 1:3] - 128.0   # centre around neutral
+    bg_l_mean = float(l_vals.mean())
+    bg_l_var = float(l_vals.var())
+    bg_saturation = float(np.sqrt((ab_shifted ** 2).sum(axis=1)).mean())
+
+    bg_l_min_cie = profile.get("background_l_min", 90)
+    bg_l_min_ocv = bg_l_min_cie * 2.55
+
+    b3_ok = True
+    if bg_l_mean < bg_l_min_ocv:
+        result.fail(
+            f"B3 background too dark (border mean L {bg_l_mean:.0f}/255, "
+            f"need ≥ {bg_l_min_ocv:.0f} for CIE L* ≥ {bg_l_min_cie})"
+        )
+        b3_ok = False
+    if bg_saturation > BG_SATURATION_MAX:
+        result.fail(
+            f"B3 background has colour/tint "
+            f"(border a*b* {bg_saturation:.1f} > {BG_SATURATION_MAX:.0f})"
+        )
+        b3_ok = False
+    if bg_l_var > BG_L_VARIANCE_MAX:
+        result.fail(
+            f"B3 background not uniform "
+            f"(border L* variance {bg_l_var:.0f} > {BG_L_VARIANCE_MAX:.0f})"
+        )
+        b3_ok = False
+
+    if b3_ok:
+        result.ok(
+            f"B3 background OK "
+            f"(L {bg_l_mean:.0f}/255, saturation {bg_saturation:.1f}, "
+            f"variance {bg_l_var:.0f})"
+        )
+
+    # Visa spec: face must stand out from the background.
+    if profile_name == "visa" and face_l_mean is not None:
+        contrast = abs(bg_l_mean - face_l_mean)
+        if contrast >= BG_CONTRAST_MIN_L:
+            result.ok(f"B3 face/background contrast OK (ΔL {contrast:.0f})")
+        else:
+            result.fail(
+                f"B3 face/background contrast insufficient "
+                f"(ΔL {contrast:.0f} < {BG_CONTRAST_MIN_L:.0f}) "
+                "— face blends into background"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Tier C — face geometry (OpenCV Haar cascades, bundled, fully offline)
 # ---------------------------------------------------------------------------
 
@@ -121,6 +360,12 @@ FACE_MIN_FRAC = 0.10
 
 # The face centre may sit within ±this fraction of the frame width from the middle.
 CENTRE_TOLERANCE = 0.10
+
+# Haar frontal-face box (brow-to-chin) underestimates the full crown-to-chin head
+# height. This factor converts the face-box height to an estimated head height.
+# Empirically: a correctly framed passport photo (head ~75% of frame) yields a
+# Haar box at ~50% of frame → 0.75 / 0.50 = 1.5.
+HEAD_FACE_RATIO = 1.5
 
 
 def detect_face_and_eyes(image_path: Path) -> dict | None:
@@ -161,6 +406,7 @@ def detect_face_and_eyes(image_path: Path) -> dict | None:
     fx, fy, fw, fh = faces[0]
     facts["height_frac"] = fh / wh
     facts["centre_x_frac"] = (fx + fw / 2) / ww
+    facts["face_box_frac"] = (fx / ww, fy / wh, fw / ww, fh / wh)
 
     # Eyes are expected in the upper half of an upright frontal face; restricting
     # the search there rejects nostril/mouth false positives and confirms orientation.
@@ -186,12 +432,16 @@ def append_face_geometry(result: CheckResult, facts: dict | None, profile: dict)
         return
     result.ok("C1 exactly one frontal face detected")
 
-    hf = facts["height_frac"]
+    hf = facts["height_frac"]  # Haar face-box (brow-to-chin) as fraction of frame
+    estimated_head_frac = hf * HEAD_FACE_RATIO  # crown-to-chin estimate
     lo, hi = profile["head_height_min_frac"], profile["head_height_max_frac"]
-    if lo <= hf <= hi:
-        result.ok(f"C2 face height {hf:.0%} of frame (target {lo:.0%}–{hi:.0%})")
+    if lo <= estimated_head_frac <= hi:
+        result.ok(f"C2 estimated head height {estimated_head_frac:.0%} of frame (target {lo:.0%}–{hi:.0%})")
     else:
-        result.fail(f"C2 face height {hf:.0%} of frame, outside target {lo:.0%}–{hi:.0%} — crop/scale needed")
+        result.fail(
+            f"C2 estimated head height {estimated_head_frac:.0%} of frame, "
+            f"outside target {lo:.0%}–{hi:.0%} — crop/scale needed"
+        )
 
     cx = facts["centre_x_frac"]
     offset = abs(cx - 0.5)
@@ -209,9 +459,89 @@ def append_face_geometry(result: CheckResult, facts: dict | None, profile: dict)
         result.fail("C4 no eyes detected in upper half of face — face may be obscured, tilted, or a false detection")
 
 
-# ---------------------------------------------------------------------------
-# Stub checks (Tier A/B implemented in subsequent issues)
-# ---------------------------------------------------------------------------
+def _fix_output_path(image_path: Path, profile_name: str, out: Path | None, multi_profile: bool) -> Path:
+    """Derive the output path for a fixed image."""
+    if out is not None and not multi_profile:
+        return out
+    suffix = image_path.suffix or ".jpg"
+    tag = f"_{profile_name}_fixed" if multi_profile else "_fixed"
+    return image_path.parent / f"{image_path.stem}{tag}{suffix}"
+
+
+def crop_to_profile(image_path: Path, profile: dict, face_facts: dict, out_path: Path) -> bool:
+    """Crop and scale source image to profile fix dimensions with head in the target band.
+
+    Returns True on success. The crop centres the face horizontally and places the
+    estimated crown with balanced top/bottom margins. Regions outside the source
+    image are padded with white.
+    """
+    import cv2
+    import numpy as np
+
+    if "face_box_frac" not in face_facts:
+        return False
+
+    img = cv2.imread(str(image_path))
+    if img is None:
+        return False
+
+    src_h, src_w = img.shape[:2]
+    xf, yf, wf, hf = face_facts["face_box_frac"]
+
+    # Face box in source pixels
+    fx = xf * src_w
+    fy = yf * src_h
+    fw = wf * src_w
+    fh = hf * src_h
+
+    # Estimated head bounds using the calibration factor
+    crown_y = fy - (HEAD_FACE_RATIO - 1.0) * fh   # crown above the face-box top
+    chin_y = fy + fh                                 # chin at the face-box bottom
+    head_h_src = chin_y - crown_y                    # = fh * HEAD_FACE_RATIO
+    face_cx = fx + fw / 2.0
+
+    # Target: head at the centre of the 70–80% band
+    head_frac = (profile["head_height_min_frac"] + profile["head_height_max_frac"]) / 2.0
+    out_w = profile["fix_width_px"]
+    out_h = profile["fix_height_px"]
+
+    # Crop region in source pixels: scale so head_h_src maps to head_frac * out_h
+    # crop_h / out_h = head_h_src / (head_frac * out_h)  →  crop_h = head_h_src / head_frac
+    crop_h = head_h_src / head_frac
+    crop_w = crop_h * out_w / out_h  # maintain output aspect ratio
+
+    # Balanced vertical margin: crown at (1 - head_frac) / 2 from top of crop
+    top_margin = (1.0 - head_frac) / 2.0 * crop_h
+    crop_y1 = crown_y - top_margin
+    crop_x1 = face_cx - crop_w / 2.0
+
+    # Convert to integer pixel coordinates
+    cx1 = int(round(crop_x1))
+    cy1 = int(round(crop_y1))
+    cw = int(round(crop_w))
+    ch = int(round(crop_h))
+
+    # White canvas; copy the source region into the correct position
+    canvas = np.full((ch, cw, 3), 255, dtype=np.uint8)
+    sx1 = max(0, cx1)
+    sy1 = max(0, cy1)
+    sx2 = min(src_w, cx1 + cw)
+    sy2 = min(src_h, cy1 + ch)
+    if sx2 > sx1 and sy2 > sy1:
+        dx1 = sx1 - cx1
+        dy1 = sy1 - cy1
+        canvas[dy1:dy1 + (sy2 - sy1), dx1:dx1 + (sx2 - sx1)] = img[sy1:sy2, sx1:sx2]
+
+    out_img = cv2.resize(canvas, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    ext = out_path.suffix.lower()
+    if ext in (".jpg", ".jpeg"):
+        cv2.imwrite(str(out_path), out_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    else:
+        cv2.imwrite(str(out_path), out_img)
+    return True
+
 
 def run_checks(image_path: Path, profiles: list[str], fix: bool, out: Path | None) -> bool:
     """Run all checks for the selected profiles; return True if all pass."""
@@ -232,14 +562,25 @@ def run_checks(image_path: Path, profiles: list[str], fix: bool, out: Path | Non
         profile = PROFILES[profile_name]
         r = CheckResult(f"Profile: {profile_name}")
 
-        # Tier A/B checks are stubs — will be filled in by their own issues.
-        r.ok("[stub] format, size, dimensions — not yet implemented")
-        r.ok("[stub] sharpness, brightness, background — not yet implemented")
+        append_tier_a(r, image_path, profile_name, profile)
+        append_tier_b(r, image_path, profile_name, profile, face_facts)
         append_face_geometry(r, face_facts, profile)
 
         results.append(r)
 
-    return print_report(results, str(image_path))
+    overall = print_report(results, str(image_path))
+
+    if fix and face_facts:
+        multi = len(profiles) > 1
+        for profile_name in profiles:
+            profile = PROFILES[profile_name]
+            fixed_path = _fix_output_path(image_path, profile_name, out, multi)
+            if crop_to_profile(image_path, profile, face_facts, fixed_path):
+                print(f"Fixed ({profile_name}): {fixed_path}")
+            else:
+                print(f"Auto-fix failed for {profile_name} — no face detected")
+
+    return overall
 
 
 # ---------------------------------------------------------------------------
