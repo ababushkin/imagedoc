@@ -16,6 +16,7 @@ from check import (
     append_tier_a,
     append_tier_b,
     append_face_geometry,
+    print_report,
 )
 
 # ---------------------------------------------------------------------------
@@ -625,3 +626,92 @@ class TestTierC_Eyes:
         r = CheckResult("test")
         append_face_geometry(r, self._facts(0), PROFILES["passport"])
         assert has_fail_tagged(r, "C4")
+
+
+# ---------------------------------------------------------------------------
+# Report formatting and exit-code logic
+# ---------------------------------------------------------------------------
+
+class TestPrintReport:
+    def _all_pass(self, name: str) -> CheckResult:
+        r = CheckResult(f"Profile: {name}")
+        r.ok("A1 format JPEG (.jpg) — accepted")
+        r.ok("A2 file size 500 KB — within 50–2048 KB")
+        r.ok("A3 image 827×1063 px — meets minimum 413×531 px")
+        r.ok("A3 aspect ratio 0.778 — within valid range 0.700–0.889")
+        r.ok("A4 image is colour (mode RGB)")
+        r.ok("B1 sharpness OK (Laplacian variance 44)")
+        r.ok("B2 brightness OK (mean L 128/255)")
+        r.ok("B3 background OK (L 250/255, saturation 0.0, variance 0)")
+        r.ok("C1 exactly one frontal face detected")
+        r.ok("C2 estimated head height 75% of frame (target 70%–80%)")
+        r.ok("C3 face horizontally centred (centre at 50% of width)")
+        r.ok("C4 2 eyes detected in upper half of face")
+        return r
+
+    def _with_fail(self, name: str) -> CheckResult:
+        r = CheckResult(f"Profile: {name}")
+        r.ok("A1 format JPEG (.jpg) — accepted")
+        r.fail("A2 file size 10 KB — below minimum 70 KB")
+        r.ok("A3 image 827×1063 px — meets minimum 354×472 px")
+        r.ok("A3 aspect ratio 0.778 — within valid range 0.700–0.889")
+        r.ok("A4 image is colour (mode RGB)")
+        r.ok("B1 sharpness OK (Laplacian variance 44)")
+        r.ok("B2 brightness OK (mean L 128/255)")
+        r.ok("B3 background OK (L 250/255, saturation 0.0, variance 0)")
+        r.ok("C1 exactly one frontal face detected")
+        r.ok("C2 estimated head height 75% of frame (target 70%–80%)")
+        r.ok("C3 face horizontally centred (centre at 50% of width)")
+        r.ok("C4 2 eyes detected in upper half of face")
+        return r
+
+    # --- return value / exit-code logic ---
+
+    def test_both_pass_returns_true(self, capsys):
+        assert print_report([self._all_pass("passport"), self._all_pass("visa")], "x.jpg") is True
+
+    def test_one_fail_returns_false(self, capsys):
+        assert print_report([self._all_pass("passport"), self._with_fail("visa")], "x.jpg") is False
+
+    def test_single_pass_returns_true(self, capsys):
+        assert print_report([self._all_pass("passport")], "x.jpg") is True
+
+    def test_single_fail_returns_false(self, capsys):
+        assert print_report([self._with_fail("passport")], "x.jpg") is False
+
+    # --- side-by-side output (--profile both) ---
+
+    def test_both_profiles_output_names_present(self, capsys):
+        print_report([self._all_pass("passport"), self._all_pass("visa")], "x.jpg")
+        out = capsys.readouterr().out
+        assert "PASSPORT" in out
+        assert "VISA" in out
+
+    def test_per_profile_verdict_shown(self, capsys):
+        print_report([self._all_pass("passport"), self._with_fail("visa")], "x.jpg")
+        out = capsys.readouterr().out
+        # The combined summary line must contain both verdicts on the same line.
+        summary_line = next(
+            (line for line in out.splitlines() if "PASSPORT:" in line and "VISA:" in line), None
+        )
+        assert summary_line is not None, "No combined summary line found"
+        assert "PASSPORT: PASS" in summary_line
+        assert "VISA: FAIL" in summary_line
+
+    def test_both_pass_verdict_line(self, capsys):
+        print_report([self._all_pass("passport"), self._all_pass("visa")], "x.jpg")
+        out = capsys.readouterr().out
+        assert "PASSPORT: PASS" in out
+        assert "VISA: PASS" in out
+
+    # --- single-profile output unchanged ---
+
+    def test_single_profile_overall_pass_line(self, capsys):
+        print_report([self._all_pass("passport")], "x.jpg")
+        out = capsys.readouterr().out
+        assert "PASS — photo meets all checked requirements." in out
+
+    def test_single_profile_overall_fail_line(self, capsys):
+        print_report([self._with_fail("passport")], "x.jpg")
+        out = capsys.readouterr().out
+        assert "FAIL — one or more requirements not met." in out

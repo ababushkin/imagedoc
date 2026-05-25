@@ -13,6 +13,7 @@ if _venv.exists() and str(_venv / "lib") not in sys.path:
         site.addsitedir(str(pkgs[0]))
 
 import argparse
+import re
 
 # ---------------------------------------------------------------------------
 # Profile rule tables
@@ -82,6 +83,41 @@ PROFILES = {
 # Result helpers
 # ---------------------------------------------------------------------------
 
+# Human-readable labels and canonical display order for the side-by-side table.
+_CHECK_LABELS = {
+    "A1": "Format",
+    "A2": "File size",
+    "A3": "Dimensions / aspect",
+    "A4": "Colour mode",
+    "B1": "Sharpness",
+    "B2": "Brightness",
+    "B3": "Background",
+    "C1": "Face count",
+    "C2": "Head height",
+    "C3": "Face centring",
+    "C4": "Eyes",
+}
+_CHECK_ORDER = ["A1", "A2", "A3", "A4", "B1", "B2", "B3", "C1", "C2", "C3", "C4"]
+
+
+def _worst_status(statuses: list[str]) -> str:
+    for s in ("FAIL", "WARN", "PASS"):
+        if s in statuses:
+            return s
+    return "—"
+
+
+def _findings_by_code(result: "CheckResult") -> dict[str, str]:
+    """Return the worst status per check code (e.g. 'A1', 'B3') for a result."""
+    code_statuses: dict[str, list[str]] = {}
+    for status, msg in result.findings:
+        m = re.match(r"([A-Z]\d)", msg)
+        if m:
+            code = m.group(1)
+            code_statuses.setdefault(code, []).append(status)
+    return {code: _worst_status(statuses) for code, statuses in code_statuses.items()}
+
+
 class CheckResult:
     def __init__(self, name: str):
         self.name = name
@@ -105,18 +141,52 @@ def print_report(results: list[CheckResult], image_path: str) -> bool:
     """Print PASS/FAIL report; return True if all checks passed."""
     print(f"\nPhoto compliance check: {image_path}")
     print("=" * 60)
-    all_passed = True
-    for result in results:
+
+    all_passed = all(r.passed for r in results)
+
+    if len(results) > 1:
+        names = [r.name.split(": ", 1)[-1].upper() for r in results]
+        codes_per = [_findings_by_code(r) for r in results]
+        label_w, col_w = 22, 10
+
+        # Comparison table
+        print("\n" + " " * label_w + "".join(n.ljust(col_w) for n in names))
+        print("-" * (label_w + col_w * len(results)))
+        for code in _CHECK_ORDER:
+            label = _CHECK_LABELS.get(code, code)
+            print(label.ljust(label_w) + "".join(
+                codes.get(code, "—").ljust(col_w) for codes in codes_per
+            ))
+        print("-" * (label_w + col_w * len(results)))
+        print("Verdict".ljust(label_w) + "".join(
+            ("PASS" if r.passed else "FAIL").ljust(col_w) for r in results
+        ))
+
+        # Per-profile details
+        for name, result in zip(names, results):
+            bar = "─" * max(1, 43 - len(name))
+            print(f"\n── {name} details {bar}")
+            for s, msg in result.findings:
+                print(f"  {s}: {msg}")
+
+        print("\n" + "=" * 60)
+        print("  ".join(
+            f"{n}: {'PASS' if r.passed else 'FAIL'}"
+            for n, r in zip(names, results)
+        ))
+    else:
+        result = results[0]
         status = "PASS" if result.passed else "FAIL"
         print(f"\n[{status}] {result.name}")
         for s, msg in result.findings:
-            indent = "  "
-            print(f"{indent}{s}: {msg}")
-        if not result.passed:
-            all_passed = False
-    print("\n" + "=" * 60)
-    overall = "PASS — photo meets all checked requirements." if all_passed else "FAIL — one or more requirements not met."
-    print(overall)
+            print(f"  {s}: {msg}")
+        print("\n" + "=" * 60)
+        print(
+            "PASS — photo meets all checked requirements."
+            if all_passed else
+            "FAIL — one or more requirements not met."
+        )
+
     return all_passed
 
 
@@ -186,31 +256,19 @@ def append_tier_a(result: CheckResult, image_path: Path, profile_name: str, prof
     else:
         result.ok(f"A3 image {width}×{height} px — meets minimum {min_w}×{min_h} px")
 
-    aspect_min = profile.get("aspect_min")
-    aspect_max = profile.get("aspect_max")
-    if aspect_min is not None and aspect_max is not None:
-        if aspect_min <= aspect <= aspect_max:
-            result.ok(
-                f"A3 aspect ratio {aspect:.3f} — within valid range "
-                f"{aspect_min:.3f}–{aspect_max:.3f}"
-            )
-        else:
-            result.fail(
-                f"A3 aspect ratio {aspect:.3f} — outside valid range "
-                f"{aspect_min:.3f}–{aspect_max:.3f} "
-                f"({'too wide' if aspect > aspect_max else 'too tall'})"
-            )
+    aspect_min = profile["aspect_min"]
+    aspect_max = profile["aspect_max"]
+    if aspect_min <= aspect <= aspect_max:
+        result.ok(
+            f"A3 aspect ratio {aspect:.3f} — within valid range "
+            f"{aspect_min:.3f}–{aspect_max:.3f}"
+        )
     else:
-        target_aspect = profile["aspect_ratio"]
-        tol = profile["aspect_tolerance"]
-        if abs(aspect - target_aspect) <= tol:
-            result.ok(f"A3 aspect ratio {aspect:.3f} — within ±{tol} of target {target_aspect:.3f}")
-        else:
-            wider = "wider" if aspect > target_aspect else "taller"
-            result.fail(
-                f"A3 aspect ratio {aspect:.3f} — outside target {target_aspect:.3f} ±{tol} "
-                f"(image is {wider} than required)"
-            )
+        result.fail(
+            f"A3 aspect ratio {aspect:.3f} — outside valid range "
+            f"{aspect_min:.3f}–{aspect_max:.3f} "
+            f"({'too wide' if aspect > aspect_max else 'too tall'})"
+        )
 
     # Warn (not fail) if preferred size is defined and not met
     pref_w = profile.get("preferred_width_px")
