@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.6.2",
+  "checkpoint_id": "a11a16142147",
+  "strategy": "manual-commit",
+  "branch": "anton/aba-246-auto-fix-f1-cropscale-around-face-to-profile-framing",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "README.md",
+    "check.py",
+    "requirements.txt",
+    "tests/conftest.py",
+    "tests/test_check.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a1/1a16142147/0/metadata.json",
+      "transcript": "/a1/1a16142147/0/full.jsonl",
+      "content_hash": "/a1/1a16142147/0/content_hash.txt",
+      "prompt": "/a1/1a16142147/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 24945,
+    "cache_creation_tokens": 287251,
+    "cache_read_tokens": 5953138,
+    "output_tokens": 87994,
+    "api_call_count": 49
+  }
+}
