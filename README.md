@@ -18,9 +18,9 @@ Both standards describe the *same physical photo*; they differ only in how it is
 
 | Requirement | Official rule | Profile |
 |---|---|---|
-| Photo size | 35–40 mm wide × 45–50 mm high | both |
+| Photo size | 35–40 mm wide × 45–50 mm high (aspect ratio 0.70–0.89) | both |
 | Face height (chin to crown) | 32–36 mm | both |
-| Background | plain white or light, contrasting with the face (Home Affairs: neutral / light grey) | both |
+| Background | plain white or light (L* ≥ 75, i.e. no darker than light grey), contrasting with the face | both |
 | Recency, expression, etc. | < 6 months old, colour, neutral expression, no glasses (medical exception aside), no retouching, even lighting | both |
 | File format | JPEG | `visa` |
 | File size | 70 KB – 3.5 MB | `visa` |
@@ -28,10 +28,10 @@ Both standards describe the *same physical photo*; they differ only in how it is
 
 The printed-passport spec is stated only in millimetres and on paper terms (dye-sublimation, heavy-weight glossy, ≥ 200 gsm) — there is **no official DPI or minimum-pixel rule**. So `check.py` adds its own pixel floors to judge a digital file, and these are tool choices, not government numbers:
 
-- **`passport`** — accepts 35 × 45 mm at 300 DPI (413 × 531 px) as the minimum; 600 DPI (827 × 1063 px) is sharper and safer for print.
+- **`passport`** — accepts 413 × 531 px (35 × 45 mm at 300 DPI) as the minimum; warns below 827 × 1063 px (600 DPI) since that prints sharper on glossy paper.
 - **`visa`** — fails below 354 × 472 px (the smallest 3:4 frame it trusts) and treats 1200 × 1600 px as the preferred size.
 
-Two deliberate deviations from the letter of the spec: the `passport` profile requires a white background (the office also allows a light contrasting one), and both profiles accept PNG as well as JPEG (Home Affairs asks for JPEG).
+One deliberate deviation from the letter of the spec: both profiles accept PNG as well as JPEG. Home Affairs asks for JPEG only; PNG is accepted but triggers a warning for the `visa` profile since the ImmiAccount portal may reject it.
 
 Beyond the table, both profiles check image quality and face geometry: in-focus (not blurry), correctly exposed, a uniform background, exactly one frontal face, the face horizontally centred, and both eyes visible.
 

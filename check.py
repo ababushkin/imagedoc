@@ -21,29 +21,31 @@ import argparse
 
 PROFILES = {
     "passport": {
-        # Physical print size: 35 × 45 mm at 300 dpi → 413 × 531 px (±5 px tolerance)
+        # Physical print size range: 35–40 mm wide × 45–50 mm tall (no official DPI/pixel rule)
         "width_mm": 35,
         "height_mm": 45,
         "dpi": 300,
-        "width_px": 413,
-        "height_px": 531,
+        "width_px": 413,       # 35 mm × 300 DPI — tool minimum
+        "height_px": 531,      # 45 mm × 300 DPI — tool minimum
         "px_tolerance": 10,
-        # Aspect ratio: width / height = 35/45 ≈ 0.778
-        "aspect_ratio": 35 / 45,
-        "aspect_tolerance": 0.02,
-        # File size band (JPEG bytes)
+        # Valid aspect ratio range: 35/50 (narrowest: 35×50 mm) to 40/45 (widest: 40×45 mm)
+        "aspect_min": 35 / 50,   # 0.700
+        "aspect_max": 40 / 45,   # 0.889
+        # File size band — tool choice; no official rule for a printed photo
         "file_size_min_kb": 50,
         "file_size_max_kb": 2048,
-        # Head height: 70–80 % of frame height
+        # Head height: 70–80 % of frame height (face 32–36 mm of 45 mm ≈ 0.711–0.800)
         "head_height_min_frac": 0.70,
         "head_height_max_frac": 0.80,
-        # Face height (chin to crown): 32–36 mm out of 45 mm ≈ 0.711–0.800
         "face_height_min_frac": 0.711,
         "face_height_max_frac": 0.800,
-        # Background: plain white/off-white (L* > 90 in CIE Lab)
-        "background_l_min": 90,
+        # Background: plain white or light — accepts light grey (L* ≥ 75 ≈ RGB 192,192,192)
+        "background_l_min": 75,
         # Colour: must be colour (not greyscale)
         "must_be_colour": True,
+        # Print resolution warning threshold: 600 DPI recommended for sharp glossy prints
+        "print_warn_width_px": 827,
+        "print_warn_height_px": 1063,
         # Auto-fix output: 35 × 45 mm at 600 dpi
         "fix_width_px": 827,
         "fix_height_px": 1063,
@@ -65,7 +67,8 @@ PROFILES = {
         "head_height_max_frac": 0.80,
         "face_height_min_frac": 0.711,
         "face_height_max_frac": 0.800,
-        "background_l_min": 90,
+        # Background: plain white or light grey (neutral/light, L* ≥ 75)
+        "background_l_min": 75,
         "must_be_colour": True,
         # Auto-fix output: preferred upload size
         "fix_width_px": 1200,
@@ -144,8 +147,13 @@ def append_tier_a(result: CheckResult, image_path: Path, profile_name: str, prof
                 f"A1 format MPO (.{suffix}) — JPEG-based container; "
                 "accepted but convert to plain JPEG if the portal rejects it"
             )
+        elif profile_name == "visa" and pil_format.upper() == "PNG":
+            result.warn(
+                f"A1 format PNG (.{suffix}) — Home Affairs requires JPEG; "
+                "PNG may be rejected by the ImmiAccount portal"
+            )
         else:
-            result.ok(f"A1 format {pil_format} (.{suffix}) — accepted (JPEG/PNG)")
+            result.ok(f"A1 format {pil_format} (.{suffix}) — accepted")
     else:
         result.fail(
             f"A1 format {pil_format or 'unknown'} (.{suffix}) not accepted — "
@@ -169,8 +177,6 @@ def append_tier_a(result: CheckResult, image_path: Path, profile_name: str, prof
     # A3 — pixel dimensions and aspect ratio
     min_w = profile["width_px"]
     min_h = profile["height_px"]
-    target_aspect = profile["aspect_ratio"]
-    tol = profile["aspect_tolerance"]
     aspect = width / height
 
     if width < min_w or height < min_h:
@@ -178,14 +184,31 @@ def append_tier_a(result: CheckResult, image_path: Path, profile_name: str, prof
     else:
         result.ok(f"A3 image {width}×{height} px — meets minimum {min_w}×{min_h} px")
 
-    if abs(aspect - target_aspect) <= tol:
-        result.ok(f"A3 aspect ratio {aspect:.3f} — within ±{tol} of target {target_aspect:.3f}")
+    aspect_min = profile.get("aspect_min")
+    aspect_max = profile.get("aspect_max")
+    if aspect_min is not None and aspect_max is not None:
+        if aspect_min <= aspect <= aspect_max:
+            result.ok(
+                f"A3 aspect ratio {aspect:.3f} — within valid range "
+                f"{aspect_min:.3f}–{aspect_max:.3f}"
+            )
+        else:
+            result.fail(
+                f"A3 aspect ratio {aspect:.3f} — outside valid range "
+                f"{aspect_min:.3f}–{aspect_max:.3f} "
+                f"({'too wide' if aspect > aspect_max else 'too tall'})"
+            )
     else:
-        wider = "wider" if aspect > target_aspect else "taller"
-        result.fail(
-            f"A3 aspect ratio {aspect:.3f} — outside target {target_aspect:.3f} ±{tol} "
-            f"(image is {wider} than required)"
-        )
+        target_aspect = profile["aspect_ratio"]
+        tol = profile["aspect_tolerance"]
+        if abs(aspect - target_aspect) <= tol:
+            result.ok(f"A3 aspect ratio {aspect:.3f} — within ±{tol} of target {target_aspect:.3f}")
+        else:
+            wider = "wider" if aspect > target_aspect else "taller"
+            result.fail(
+                f"A3 aspect ratio {aspect:.3f} — outside target {target_aspect:.3f} ±{tol} "
+                f"(image is {wider} than required)"
+            )
 
     # Warn (not fail) if preferred size is defined and not met
     pref_w = profile.get("preferred_width_px")
@@ -194,6 +217,17 @@ def append_tier_a(result: CheckResult, image_path: Path, profile_name: str, prof
         result.warn(
             f"A3 image {width}×{height} px — preferred size is {pref_w}×{pref_h} px "
             "(not required but recommended for best upload quality)"
+        )
+
+    # Print resolution warning: only relevant when image meets the minimum
+    warn_w = profile.get("print_warn_width_px")
+    warn_h = profile.get("print_warn_height_px")
+    if (warn_w and warn_h
+            and width >= min_w and height >= min_h
+            and (width < warn_w or height < warn_h)):
+        result.warn(
+            f"A3 image {width}×{height} px — below recommended {warn_w}×{warn_h} px "
+            "(300 DPI minimum; 600 DPI recommended for sharper print quality)"
         )
 
     # A4 — colour vs greyscale
@@ -332,8 +366,8 @@ def append_tier_b(
             f"variance {bg_l_var:.0f})"
         )
 
-    # Visa spec: face must stand out from the background.
-    if profile_name == "visa" and face_l_mean is not None:
+    # Both specs require the face to be distinct from the background.
+    if face_l_mean is not None:
         contrast = abs(bg_l_mean - face_l_mean)
         if contrast >= BG_CONTRAST_MIN_L:
             result.ok(f"B3 face/background contrast OK (ΔL {contrast:.0f})")
