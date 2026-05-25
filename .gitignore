@@ -1,0 +1,13 @@
+# Local virtualenv
+.venv/
+
+# Personal photos and documents fed to the checker — never commit (contains PII)
+input/
+output/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
