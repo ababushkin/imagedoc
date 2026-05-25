@@ -1,0 +1,22 @@
+Work on Linear issue ABA-249:
+
+<issue identifier="ABA-249">
+<title>README — usage section for check.py</title>
+<description>
+**P4.** Document the tool once it works.
+
+* Both commands (check + `--fix`), the `passport`/`visa`/`both` profiles.
+* What it does and does NOT verify (advisory only; no recency/unedited verification; no background replacement; not a substitute for official assessment).
+
+**Acceptance:** README documents both commands and the non-claims.
+</description>
+<team name="Personal"/>
+<label>model:haiku</label>
+<project name="AU passport/visa photo — pre-submission compliance">Local, offline tool to verify and auto-fix a photo against AU passport/visa specs before printing or uploading — no face data sent to any online service.</project>
+<issue-relations>
+<blocked-by>
+<issue-ref identifier="ABA-248" title="Auto-fix F2+F3 — visa size-targeting, -o output, re-check + exclusions"/>
+<issue-ref identifier="ABA-247" title="--profile both — report formatting, per-profile verdict, exit code"/>
+</blocked-by>
+</issue-relations>
+</issue>
