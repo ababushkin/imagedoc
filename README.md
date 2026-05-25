@@ -52,15 +52,52 @@ Beyond the table, both profiles check image quality and face geometry: in-focus 
 
 ### Checking a photo
 
+Check a photo against the chosen profile(s):
+
 ```
-python3 check.py <image> [--profile passport|visa|both] [--fix] [-o out.jpg]
+python3 check.py <image> [--profile passport|visa|both]
 ```
 
-- `--profile` — which spec to check against; defaults to `both`.
-- `--fix` (or `-o`) — crop, scale, and re-encode the photo so its framing, dimensions, and file size meet the chosen profile, then re-check the result. Fixing is geometric only — it never retouches the image or changes the background.
-- `-o` — where to write the fixed image (implies `--fix`).
+The command prints a table of PASS/FAIL results for each checked requirement. It exits with code 0 if all checks pass, or code 1 if any check fails — so you can use it in a script as a gate.
 
-The command prints a per-rule PASS/FAIL report and exits non-zero if any check fails, so it can gate a script.
+**Profiles:**
+- `passport` — physical photo specifications for Australian passport applications (35–40 mm × 45–50 mm, 300+ DPI recommended)
+- `visa` — digital upload specifications for Australian visa and citizenship applications (matches the same physical photo standard, but with pixel-size and file-size constraints for online lodgement)
+- `both` (default) — checks against both profiles and reports them side by side
+
+### Auto-fixing a photo
+
+If the photo has geometry or framing issues, you can auto-fix the most common problems:
+
+```
+python3 check.py <image> [--profile passport|visa|both] --fix
+```
+
+or write the fixed image to a specific location:
+
+```
+python3 check.py <image> [--profile passport|visa|both] -o fixed.jpg
+```
+
+The `--fix` option (or `--o`, which implies `--fix`) will:
+1. Crop the image to reframe the face to the target head height (70–80% of the image height).
+2. Scale to the preferred dimensions for the chosen profile.
+3. Re-encode as JPEG.
+4. Re-run checks on the result to confirm it passes.
+
+Fixing is **geometric only** — it crops and scales, but never retouches the image, changes colours, or alters the background. If the background is the wrong colour, the exposure is wrong, or the face is out of focus, fixing cannot address those — re-shoot the photo with the correct settings.
+
+### Non-claims — what check.py does not verify
+
+`check.py` is **advisory only**. It catches common, mechanically-detectable failures before you print or upload, but the Australian Passport Office and Department of Home Affairs make the final call on acceptance.
+
+The tool does **not** verify:
+- **Recency** — it cannot confirm the photo is < 6 months old.
+- **Unedited** — it cannot detect retouching or digital edits.
+- **Background replacement** — it does not detect if the background has been artificially added or removed.
+- **Biometric match** — it is not a substitute for official identity verification.
+
+The Passport Office and Home Affairs will conduct their own checks, including recency and authenticity, when you lodge your application. A photo that passes `check.py` is compliant with the format and quality specs, but not guaranteed to be accepted.
 
 ## Installation
 
