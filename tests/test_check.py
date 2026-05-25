@@ -17,6 +17,8 @@ from check import (
     append_tier_b,
     append_face_geometry,
     print_report,
+    crop_to_profile,
+    _save_jpeg_within_size,
 )
 
 # ---------------------------------------------------------------------------
@@ -715,3 +717,121 @@ class TestPrintReport:
         print_report([self._with_fail("passport")], "x.jpg")
         out = capsys.readouterr().out
         assert "FAIL — one or more requirements not met." in out
+
+
+# ---------------------------------------------------------------------------
+# Re-shoot guidance — B1/B2/B3 failures must include re-take text
+# ---------------------------------------------------------------------------
+
+class TestReshootGuidance:
+    def test_blur_fail_has_retake_guidance(self, tmp_path):
+        path = make_jpeg(tmp_path, 200, 200, color=(180, 180, 180))
+        r = CheckResult("test")
+        append_tier_b(r, path, "passport", PROFILES["passport"], None)
+        b1_fails = [m for m in fails(r) if "B1" in m]
+        assert b1_fails, "Uniform image should fail B1"
+        assert any("re-take" in m.lower() for m in b1_fails), (
+            f"B1 fail must include re-take guidance; got: {b1_fails}"
+        )
+
+    def test_underexposed_fail_has_retake_guidance(self, tmp_path):
+        path = make_jpeg(tmp_path, 200, 200, color=(5, 5, 5))
+        r = CheckResult("test")
+        append_tier_b(r, path, "passport", PROFILES["passport"], None)
+        b2_fails = [m for m in fails(r) if "B2" in m]
+        assert b2_fails, "Dark image should fail B2"
+        assert any("re-take" in m.lower() for m in b2_fails), (
+            f"B2 underexposed fail must include re-take guidance; got: {b2_fails}"
+        )
+
+    def test_overexposed_fail_has_retake_guidance(self, tmp_path):
+        path = make_jpeg(tmp_path, 200, 200, color=(252, 252, 252), quality=99)
+        r = CheckResult("test")
+        append_tier_b(r, path, "passport", PROFILES["passport"], None)
+        b2_fails = [m for m in fails(r) if "B2" in m]
+        assert b2_fails, "Near-white image should fail B2"
+        assert any("re-take" in m.lower() for m in b2_fails), (
+            f"B2 overexposed fail must include re-take guidance; got: {b2_fails}"
+        )
+
+    def test_background_colour_fail_has_retake_guidance(self, tmp_path):
+        path = make_jpeg(tmp_path, 200, 200, color=(0, 200, 0))
+        r = CheckResult("test")
+        append_tier_b(r, path, "passport", PROFILES["passport"], None)
+        b3_fails = [m for m in fails(r) if "B3" in m]
+        assert b3_fails, "Green background should fail B3"
+        assert any("re-take" in m.lower() for m in b3_fails), (
+            f"B3 colour fail must include re-take guidance; got: {b3_fails}"
+        )
+
+    def test_background_dark_fail_has_retake_guidance(self, tmp_path):
+        path = make_jpeg(tmp_path, 200, 200, color=(30, 30, 30))
+        r = CheckResult("test")
+        append_tier_b(r, path, "passport", PROFILES["passport"], None)
+        b3_fails = [m for m in fails(r) if "B3" in m]
+        assert b3_fails, "Dark background should fail B3"
+        assert any("re-take" in m.lower() for m in b3_fails), (
+            f"B3 dark fail must include re-take guidance; got: {b3_fails}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# JPEG size iteration — _save_jpeg_within_size and crop_to_profile (visa)
+# ---------------------------------------------------------------------------
+
+class TestJpegSizeIteration:
+    def test_in_band_quality_95(self, tmp_path):
+        """Quality 95 already in band → fast path, file within bounds."""
+        img = np.full((100, 100, 3), 128, dtype=np.uint8)
+        out = tmp_path / "out.jpg"
+        size_kb = _save_jpeg_within_size(img, out, 0, 99999)
+        assert out.exists()
+        assert 0 <= size_kb  # any size accepted
+
+    def test_caps_at_max_kb(self, tmp_path):
+        """Binary search must cap file size at max_kb."""
+        rng = np.random.default_rng(0)
+        img = rng.integers(0, 256, (200, 200, 3), dtype=np.uint8)
+        out = tmp_path / "out.jpg"
+        # Set tight max to force the search
+        ok, raw = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        q95_kb = len(raw) / 1024
+        max_kb = q95_kb * 0.5  # half of quality-95 size
+        size_kb = _save_jpeg_within_size(img, out, 0, max_kb)
+        assert size_kb <= max_kb, f"Output {size_kb:.1f} KB exceeds max {max_kb:.1f} KB"
+
+    def test_visa_fixed_file_size_in_band(self, tmp_path):
+        """Auto-fixed visa JPEG must be within 70 KB – 3.5 MB."""
+        src = make_noisy_jpeg(tmp_path, 600, 900)
+        face_facts = {
+            "n_faces": 1,
+            "height_frac": 0.50 / HEAD_FACE_RATIO,
+            "centre_x_frac": 0.5,
+            "face_box_frac": (0.2, 0.3, 0.6, 0.4),
+            "n_eyes_upper": 2,
+        }
+        out_path = tmp_path / "visa_fixed.jpg"
+        assert crop_to_profile(src, PROFILES["visa"], face_facts, out_path)
+        size_kb = out_path.stat().st_size / 1024
+        min_kb = PROFILES["visa"]["file_size_min_kb"]
+        max_kb = PROFILES["visa"]["file_size_max_kb"]
+        assert size_kb >= min_kb, f"Fixed visa JPEG {size_kb:.0f} KB below min {min_kb} KB"
+        assert size_kb <= max_kb, f"Fixed visa JPEG {size_kb:.0f} KB above max {max_kb} KB"
+
+    def test_visa_fixed_dimensions(self, tmp_path):
+        """Auto-fixed visa image must be exactly fix_width_px × fix_height_px."""
+        from PIL import Image as PILImage
+        src = make_noisy_jpeg(tmp_path, 600, 900, name="src2.jpg")
+        face_facts = {
+            "n_faces": 1,
+            "height_frac": 0.50 / HEAD_FACE_RATIO,
+            "centre_x_frac": 0.5,
+            "face_box_frac": (0.2, 0.3, 0.6, 0.4),
+            "n_eyes_upper": 2,
+        }
+        out_path = tmp_path / "visa_dims.jpg"
+        assert crop_to_profile(src, PROFILES["visa"], face_facts, out_path)
+        with PILImage.open(out_path) as img:
+            w, h = img.size
+        assert w == PROFILES["visa"]["fix_width_px"]
+        assert h == PROFILES["visa"]["fix_height_px"]

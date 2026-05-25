@@ -371,7 +371,8 @@ def append_tier_b(
     else:
         result.fail(
             f"B1 image too blurry (Laplacian variance {lap_var:.0f} "
-            f"< threshold {SHARPNESS_THRESHOLD:.0f})"
+            f"< threshold {SHARPNESS_THRESHOLD:.0f}) "
+            "— re-take with a steady camera; do not sharpen in post-processing"
         )
 
     # --- B2: Brightness/exposure ---
@@ -380,12 +381,14 @@ def append_tier_b(
     if mean_l < BRIGHTNESS_MIN_L:
         result.fail(
             f"B2 underexposed (mean L {mean_l:.0f}/255 "
-            f"< minimum {BRIGHTNESS_MIN_L})"
+            f"< minimum {BRIGHTNESS_MIN_L}) "
+            "— re-take with more light or use flash; editing exposure is not permitted"
         )
     elif mean_l > BRIGHTNESS_MAX_L:
         result.fail(
             f"B2 overexposed (mean L {mean_l:.0f}/255 "
-            f"> maximum {BRIGHTNESS_MAX_L})"
+            f"> maximum {BRIGHTNESS_MAX_L}) "
+            "— re-take away from direct light; editing exposure is not permitted"
         )
     else:
         result.ok(f"B2 brightness OK (mean L {mean_l:.0f}/255)")
@@ -420,19 +423,22 @@ def append_tier_b(
     if bg_l_mean < bg_l_min_ocv:
         result.fail(
             f"B3 background too dark (border mean L {bg_l_mean:.0f}/255, "
-            f"need ≥ {bg_l_min_ocv:.0f} for CIE L* ≥ {bg_l_min_cie})"
+            f"need ≥ {bg_l_min_ocv:.0f} for CIE L* ≥ {bg_l_min_cie}) "
+            "— re-take against a plain white or light-grey background"
         )
         b3_ok = False
     if bg_saturation > BG_SATURATION_MAX:
         result.fail(
             f"B3 background has colour/tint "
-            f"(border a*b* {bg_saturation:.1f} > {BG_SATURATION_MAX:.0f})"
+            f"(border a*b* {bg_saturation:.1f} > {BG_SATURATION_MAX:.0f}) "
+            "— re-take against a plain neutral-white background"
         )
         b3_ok = False
     if bg_l_var > BG_L_VARIANCE_MAX:
         result.fail(
             f"B3 background not uniform "
-            f"(border L* variance {bg_l_var:.0f} > {BG_L_VARIANCE_MAX:.0f})"
+            f"(border L* variance {bg_l_var:.0f} > {BG_L_VARIANCE_MAX:.0f}) "
+            "— re-take against a plain background with no shadows or patterns"
         )
         b3_ok = False
 
@@ -582,6 +588,44 @@ def _fix_output_path(image_path: Path, profile_name: str, out: Path | None, mult
     return image_path.parent / f"{image_path.stem}{tag}{suffix}"
 
 
+def _save_jpeg_within_size(img_bgr, out_path: Path, min_kb: float, max_kb: float) -> float:
+    """Save JPEG at the highest quality with file size in [min_kb, max_kb].
+
+    Falls back to quality 95 if no quality in [1, 95] lands in the band.
+    Returns actual file size in KB.
+    """
+    import cv2
+
+    def _enc(q: int) -> tuple[bytes, float]:
+        ok, raw = cv2.imencode(".jpg", img_bgr, [cv2.IMWRITE_JPEG_QUALITY, q])
+        return (raw.tobytes(), len(raw) / 1024) if ok else (b"", 0.0)
+
+    data, size_kb = _enc(95)
+
+    if min_kb <= size_kb <= max_kb:
+        out_path.write_bytes(data)
+        return size_kb
+
+    if size_kb > max_kb:
+        # Binary search for the highest quality whose file size is ≤ max_kb.
+        lo, hi, best_data, best_size = 1, 94, b"", 0.0
+        while lo <= hi:
+            q = (lo + hi) // 2
+            d, s = _enc(q)
+            if s <= max_kb:
+                best_data, best_size = d, s
+                lo = q + 1
+            else:
+                hi = q - 1
+        if best_data and best_size >= min_kb:
+            out_path.write_bytes(best_data)
+            return best_size
+
+    # Fallback: quality 95 — A2 will report the actual out-of-band size.
+    out_path.write_bytes(data)
+    return size_kb
+
+
 def crop_to_profile(image_path: Path, profile: dict, face_facts: dict, out_path: Path) -> bool:
     """Crop and scale source image to profile fix dimensions with head in the target band.
 
@@ -651,7 +695,11 @@ def crop_to_profile(image_path: Path, profile: dict, face_facts: dict, out_path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     ext = out_path.suffix.lower()
     if ext in (".jpg", ".jpeg"):
-        cv2.imwrite(str(out_path), out_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        _save_jpeg_within_size(
+            out_img, out_path,
+            profile.get("file_size_min_kb", 0),
+            profile.get("file_size_max_kb", float("inf")),
+        )
     else:
         cv2.imwrite(str(out_path), out_img)
     return True
@@ -686,13 +734,18 @@ def run_checks(image_path: Path, profiles: list[str], fix: bool, out: Path | Non
 
     if fix and face_facts:
         multi = len(profiles) > 1
+        fixed: list[tuple[str, Path]] = []
         for profile_name in profiles:
             profile = PROFILES[profile_name]
             fixed_path = _fix_output_path(image_path, profile_name, out, multi)
             if crop_to_profile(image_path, profile, face_facts, fixed_path):
-                print(f"Fixed ({profile_name}): {fixed_path}")
+                print(f"\nFixed ({profile_name}): {fixed_path}")
+                fixed.append((profile_name, fixed_path))
             else:
                 print(f"Auto-fix failed for {profile_name} — no face detected")
+
+        for profile_name, fixed_path in fixed:
+            run_checks(fixed_path, [profile_name], fix=False, out=None)
 
     return overall
 
