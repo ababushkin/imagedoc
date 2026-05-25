@@ -361,11 +361,14 @@ FACE_MIN_FRAC = 0.10
 # The face centre may sit within ±this fraction of the frame width from the middle.
 CENTRE_TOLERANCE = 0.10
 
-# Haar frontal-face box (brow-to-chin) underestimates the full crown-to-chin head
-# height. This factor converts the face-box height to an estimated head height.
-# Empirically: a correctly framed passport photo (head ~75% of frame) yields a
-# Haar box at ~50% of frame → 0.75 / 0.50 = 1.5.
-HEAD_FACE_RATIO = 1.5
+# The Haar frontal-face box spans roughly the forehead to the chin, which is
+# shorter than the full crown-to-chin head height the specs measure. This factor
+# converts detected face-box height to an estimated head height. Calibrated by
+# cropping a reference portrait to a known 75%-of-frame head and measuring the
+# resulting Haar box at ~58% of frame → 0.75 / 0.58 ≈ 1.30. Derived from a single
+# reference face; crown position varies with hairstyle, so re-validate against
+# more portraits if outputs frame the head too high or low.
+HEAD_FACE_RATIO = 1.30
 
 
 def detect_face_and_eyes(image_path: Path) -> dict | None:
