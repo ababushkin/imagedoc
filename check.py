@@ -51,13 +51,15 @@ PROFILES = {
         "fix_height_px": 1063,
     },
     "visa": {
-        # Home Affairs digital upload: 354 × 472 px minimum (portrait, ~3:4)
-        # Preferred: 1200 × 1600 px; not meeting preferred is a WARN, not FAIL.
+        # Home Affairs digital upload: 354 × 472 px minimum (portrait).
+        # The same 35–40 mm × 45–50 mm physical photo is used for both passport and visa,
+        # so the valid aspect range is identical. The preferred upload size (1200 × 1600 = 3:4)
+        # may differ from the photo aspect; --fix resizes to preferred dimensions.
         "width_px": 354,
         "height_px": 472,
         "px_tolerance": 0,          # exact minimum; larger is accepted
-        "aspect_ratio": 3 / 4,
-        "aspect_tolerance": 0.02,
+        "aspect_min": 35 / 50,      # 0.700 — narrowest: 35×50 mm
+        "aspect_max": 40 / 45,      # 0.889 — widest: 40×45 mm
         "preferred_width_px": 1200,
         "preferred_height_px": 1600,
         "file_size_min_kb": 70,
@@ -242,7 +244,12 @@ def append_tier_a(result: CheckResult, image_path: Path, profile_name: str, prof
 # ---------------------------------------------------------------------------
 
 # Laplacian variance below this value → image is blurry.
-SHARPNESS_THRESHOLD = 100.0
+# Calibrated for face ROIs normalised to SHARPNESS_NORM_LONG_SIDE px: a tack-sharp
+# AusPost photo (1056×1358, 300 DPI) measures ~44 on the face ROI; threshold must be below that.
+SHARPNESS_THRESHOLD = 20.0
+# Normalise the face ROI to this long-side limit before measuring Laplacian variance,
+# making the threshold independent of source resolution.
+SHARPNESS_NORM_LONG_SIDE = 500
 
 # Face-region mean L* (OpenCV 0-255 scale; CIE L* = OpenCV_L / 2.55).
 # Below MIN → underexposed; above MAX → overexposed / washed out.
@@ -294,6 +301,12 @@ def append_tier_b(
 
     # --- B1: Sharpness ---
     lap_roi = face_roi_gray if face_roi_gray is not None else gray
+    # Normalise to SHARPNESS_NORM_LONG_SIDE so the threshold is resolution-independent.
+    # Downscaling concentrates edges per pixel; never upscale (that would invent sharpness).
+    rh, rw = lap_roi.shape[:2]
+    if max(rh, rw) > SHARPNESS_NORM_LONG_SIDE:
+        nscale = SHARPNESS_NORM_LONG_SIDE / max(rh, rw)
+        lap_roi = cv2.resize(lap_roi, (max(1, round(rw * nscale)), max(1, round(rh * nscale))))
     lap_var = float(cv2.Laplacian(lap_roi, cv2.CV_64F).var())
     if lap_var >= SHARPNESS_THRESHOLD:
         result.ok(f"B1 sharpness OK (Laplacian variance {lap_var:.0f})")
@@ -320,15 +333,21 @@ def append_tier_b(
         result.ok(f"B2 brightness OK (mean L {mean_l:.0f}/255)")
 
     # --- B3: Background uniformity ---
-    # Sample the four border strips and concatenate their pixels.
     bh = max(1, int(h * BG_BORDER_FRAC))
     bw = max(1, int(w * BG_BORDER_FRAC))
-    border_pixels = np.concatenate([
-        lab[:bh, :, :].reshape(-1, 3),
-        lab[h - bh:, :, :].reshape(-1, 3),
-        lab[:, :bw, :].reshape(-1, 3),
-        lab[:, w - bw:, :].reshape(-1, 3),
-    ], axis=0).astype(float)
+    # When the face box is known, sample only the top strip — the one region guaranteed
+    # to be background in a correctly framed portrait.  The left/right/bottom strips are
+    # contaminated by hair, ears, and clothing in a photo that fills the frame as required.
+    # Without face information fall back to the full 4-edge border.
+    if face_facts and "face_box_frac" in face_facts:
+        border_pixels = lab[:bh, :, :].reshape(-1, 3).astype(float)
+    else:
+        border_pixels = np.concatenate([
+            lab[:bh, :, :].reshape(-1, 3),
+            lab[h - bh:, :, :].reshape(-1, 3),
+            lab[:, :bw, :].reshape(-1, 3),
+            lab[:, w - bw:, :].reshape(-1, 3),
+        ], axis=0).astype(float)
 
     l_vals = border_pixels[:, 0]
     ab_shifted = border_pixels[:, 1:3] - 128.0   # centre around neutral

@@ -11,6 +11,8 @@ from check import (
     PROFILES,
     CheckResult,
     HEAD_FACE_RATIO,
+    SHARPNESS_THRESHOLD,
+    SHARPNESS_NORM_LONG_SIDE,
     append_tier_a,
     append_tier_b,
     append_face_geometry,
@@ -70,6 +72,39 @@ def make_noisy_jpeg(tmp_path: Path, width: int, height: int,
     cv2.imwrite(str(path), arr, [cv2.IMWRITE_JPEG_QUALITY, 95])
     return path
 
+def make_sine_jpeg(tmp_path: Path, width: int, height: int,
+                   amplitude: float = 20.0, wavelength: float = 10.0,
+                   name: str | None = None) -> Path:
+    """Sinusoidal horizontal stripe pattern.
+
+    Discrete Laplacian variance ≈ 2*A² * (cos(2π/λ)-1)² ≈ 29 for A=20, λ=10.
+    This is above SHARPNESS_THRESHOLD (20) but below the old value of 100.
+    """
+    x = np.tile(np.arange(width, dtype=np.float32), (height, 1))
+    vals = 128.0 + amplitude * np.sin(2 * np.pi * x / wavelength)
+    arr = np.clip(vals, 0, 255).astype(np.uint8)
+    arr = np.stack([arr, arr, arr], axis=2)
+    path = tmp_path / (name or f"sine_{width}x{height}.jpg")
+    cv2.imwrite(str(path), arr, [cv2.IMWRITE_JPEG_QUALITY, 99])
+    return path
+
+
+def make_portrait_tight_jpeg(tmp_path: Path, width: int, height: int,
+                              name: str | None = None) -> Path:
+    """Portrait with white top strip (background) and grey body/hair everywhere else.
+
+    The top BG_BORDER_FRAC strip is white; the rest is mid-grey so the 4-edge
+    border strips contain a mix → high variance → old B3 would fail.
+    With face-aware sampling (top strip only) the background is uniformly white → passes.
+    """
+    arr = np.full((height, width, 3), 100, dtype=np.uint8)   # mid-grey subject
+    bh = max(1, int(height * 0.10))
+    arr[:bh, :] = 250                                          # white background at top
+    path = tmp_path / (name or f"portrait_tight_{width}x{height}.jpg")
+    cv2.imwrite(str(path), arr, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    return path
+
+
 def make_contrast_jpeg(tmp_path: Path, width: int, height: int,
                        border_gray: int, face_gray: int,
                        name: str | None = None) -> Path:
@@ -123,6 +158,24 @@ class TestProfileConstants:
     def test_visa_head_height_band_matches_passport(self):
         assert PROFILES["visa"]["head_height_min_frac"] == PROFILES["passport"]["head_height_min_frac"]
         assert PROFILES["visa"]["head_height_max_frac"] == PROFILES["passport"]["head_height_max_frac"]
+
+    def test_visa_aspect_range_covers_35x45(self):
+        asp = 35 / 45
+        assert PROFILES["visa"]["aspect_min"] <= asp <= PROFILES["visa"]["aspect_max"]
+
+    def test_visa_aspect_range_matches_passport(self):
+        assert PROFILES["visa"]["aspect_min"] == PROFILES["passport"]["aspect_min"]
+        assert PROFILES["visa"]["aspect_max"] == PROFILES["passport"]["aspect_max"]
+
+    def test_visa_no_legacy_aspect_keys(self):
+        v = PROFILES["visa"]
+        assert "aspect_ratio" not in v, "aspect_ratio key must be removed from visa profile"
+        assert "aspect_tolerance" not in v, "aspect_tolerance key must be removed from visa profile"
+
+    def test_sharpness_threshold_calibrated_for_real_portraits(self):
+        # AusPost photo (tack-sharp, 300 DPI) measured ~44; threshold must be below that.
+        assert SHARPNESS_THRESHOLD <= 44.0
+        assert SHARPNESS_NORM_LONG_SIDE >= 400
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +323,14 @@ class TestTierA_AspectRatio:
         fails_a3 = [m for m in fails(r) if "A3" in m]
         assert not fails_a3, f"3:4 visa image should pass; A3 fails: {fails_a3}"
 
+    def test_visa_35x45_passes(self, tmp_path):
+        """Standard 35×45 mm passport photo (aspect 0.778) must also pass the visa profile."""
+        path = make_jpeg(tmp_path, 413, 531)
+        r = CheckResult("test")
+        append_tier_a(r, path, "visa", self._profile_no_filesize("visa"))
+        fails_a3 = [m for m in fails(r) if "A3" in m]
+        assert not fails_a3, f"35:45 aspect should pass visa; A3 fails: {fails_a3}"
+
     def test_visa_square_fails_aspect(self, tmp_path):
         path = make_jpeg(tmp_path, 500, 500)
         r = CheckResult("test")
@@ -308,6 +369,15 @@ class TestTierB_Sharpness:
         r = CheckResult("test")
         append_tier_b(r, path, "passport", PROFILES["passport"], None)
         assert not has_fail_tagged(r, "B1"), "Noisy image should pass sharpness"
+
+    def test_moderate_sharpness_passes_b1(self, tmp_path):
+        """Sinusoidal pattern gives Laplacian variance ~29 — above new threshold (20) but below old (100)."""
+        path = make_sine_jpeg(tmp_path, 200, 200, amplitude=20, wavelength=10)
+        r = CheckResult("test")
+        append_tier_b(r, path, "passport", PROFILES["passport"], None)
+        assert not has_fail_tagged(r, "B1"), (
+            f"Sine-pattern image (Laplacian variance ~29) should pass B1; findings: {r.findings}"
+        )
 
 
 class TestTierB_Brightness:
@@ -384,6 +454,34 @@ class TestTierB_Background:
             assert contrast_fails, (
                 f"{profile_name}: low-contrast face should fail; findings: {r.findings}"
             )
+
+    def test_tightly_framed_portrait_passes_b3_uniformity_with_face_facts(self, tmp_path):
+        """When face box is provided, B3 samples only the top background strip.
+
+        A correctly framed portrait has hair/clothing at the left/right/bottom edges
+        so 4-edge sampling would fail uniformity.  Top-only sampling sees only the
+        plain white wall behind the subject.
+        """
+        path = make_portrait_tight_jpeg(tmp_path, 300, 400)
+        face_facts = {"n_faces": 1, "face_box_frac": (0.2, 0.3, 0.6, 0.5)}
+        r = CheckResult("test")
+        append_tier_b(r, path, "passport", PROFILES["passport"], face_facts)
+        b3_uniform_fails = [m for m in fails(r) if "B3" in m and "uniform" in m]
+        assert not b3_uniform_fails, (
+            "Portrait with white top and dark body should pass B3 uniformity when face_facts given; "
+            f"B3 fails: {b3_uniform_fails}"
+        )
+
+    def test_tightly_framed_portrait_fails_b3_uniformity_without_face_facts(self, tmp_path):
+        """Without face box, fall back to 4-edge sampling — mixed light/dark border fails uniformity."""
+        path = make_portrait_tight_jpeg(tmp_path, 300, 400)
+        r = CheckResult("test")
+        append_tier_b(r, path, "passport", PROFILES["passport"], None)
+        b3_uniform_fails = [m for m in fails(r) if "B3" in m and "uniform" in m]
+        assert b3_uniform_fails, (
+            "Portrait with mixed border should fail B3 uniformity without face_facts; "
+            f"findings: {r.findings}"
+        )
 
     def test_contrast_check_applied_to_passport(self, tmp_path):
         """Passport profile must now check contrast (was previously visa-only)."""
